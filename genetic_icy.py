@@ -12,9 +12,9 @@ VEL_Y = JUMPING_HEIGHT  # Setting the jumping height.
 pygame.init()
 WIN = pygame.display.set_mode((WIDTH, HEIGHT))
 GAMEPLAY_SOUND_LENGTH = 31  # 31 seconds.
-SHELVES_COUNT = 500  # Number of shelves in the game.
+SHELVES_COUNT = 100  # Number of shelves in the game.
 MAX_GENERATIONS = 10
-MUTATION_RATE = 0.1
+MUTATION_RATE = 0.05
 
 # Images:
 BODY_IMAGE = pygame.image.load("Assets/body.png")
@@ -232,7 +232,7 @@ def CheckIfTouchingFloor(body):  # Checking if the body is still on the main gro
 
 
 def HandleBackground(body): # Drawing the background.
-    if body.y >= total_shelves_list[500].rect.y:
+    if body.y >= total_shelves_list[100].rect.y:
         WIN.blit(BACKGROUND, (32, background_y))
 
 
@@ -315,6 +315,7 @@ def main():  # Main function.
     print("Rate--------")
     paused = False
     sound_timer = 0
+    music_played = False;
     for generation in range(MAX_GENERATIONS):
         setGlobals()        
         total_shelves_list = copy.deepcopy(reset_list)
@@ -333,8 +334,12 @@ def main():  # Main function.
             start = False
             for body in bodies :
                 on_ground = not body.rolling_down and body.y == HEIGHT - 25 - body.size
-                if sound_timer % (56 * GAMEPLAY_SOUND_LENGTH) == 0:  # 56 = Program loops count per second.
-                    GAMEPLAY_SOUND.play()
+                if not music_played:
+                    if sound_timer % (56 * GAMEPLAY_SOUND_LENGTH) == 0:  # 56 = Program loops count per second.
+                        GAMEPLAY_SOUND.play()
+                        music_played = True;
+                    else:
+                        music_played = False;
                 sound_timer += 1
                 if body.rolling_down:  # If screen should roll down.
                     if body == MaxBody(bodies) :
