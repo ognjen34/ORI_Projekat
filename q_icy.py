@@ -5,10 +5,10 @@ import copy
 import numpy as np
 from collections import deque
 import tensorflow as tf
+import pickle
 
 
-
-GAME_FPS = 150
+GAME_FPS = 300
 WIDTH, HEIGHT = 1000, 700
 JUMPING_HEIGHT = 20
 MAX_ACCELERATION = 13
@@ -109,14 +109,8 @@ class Body:
 body = Body()
 
 total_shelves_list = []
-for num in range(0, SHELVES_COUNT + 1):  # Creating all the game shelves.
-    new_shelf = Shelf(num)
-    if num % 50 == 0:
-        new_shelf.width = BACKGROUND_WIDTH
-        new_shelf.rect.width = BACKGROUND_WIDTH
-        new_shelf.x = WALL_WIDTH
-        new_shelf.rect.x = WALL_WIDTH
-    total_shelves_list.append(new_shelf)
+with open('shelves_data', 'rb') as file:
+    total_shelves_list = pickle.load(file)
 copy_shelves = copy.deepcopy(total_shelves_list)
 
 # Sounds:
@@ -238,9 +232,10 @@ def HandleBackground(): # Drawing the background.
 class QNetwork(tf.keras.Model):
     def __init__(self, action_size):
         super(QNetwork, self).__init__()
+        self.action_size = action_size
         self.dense1 = tf.keras.layers.Dense(64, activation='relu')
         self.dense2 = tf.keras.layers.Dense(64, activation='relu')
-        self.dense3 = tf.keras.layers.Dense(action_size)
+        self.dense3 = tf.keras.layers.Dense(self.action_size)
 
     def call(self, inputs):
         x = self.dense1(inputs)
@@ -248,10 +243,22 @@ class QNetwork(tf.keras.Model):
         q_values = self.dense3(x)
         return q_values
 
-q_network = QNetwork(3)
+    def get_config(self):
+        return {'action_size': self.action_size}
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
+# Example usage:
+action_size = 3
+q_network = tf.keras.Sequential()
+q_network.add(tf.keras.layers.Dense(64, activation='relu', input_shape=(6,)))
+q_network.add(tf.keras.layers.Dense(64, activation='relu'))
+q_network.add(tf.keras.layers.Dense(action_size))
 optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 action_mapping = {'jump':0,'left':1,'right':2}
-
+q_network = tf.keras.models.load_model("q_network_saved_data")
 def main():  
     global body,VEL_Y,gamma,exploration_proba
     game_running = True
@@ -321,7 +328,11 @@ def main():
 
             
             next_state = tf.convert_to_tensor([list((body.x, body.y,body.score,body.standing,body.falling,body.jumping))])  
-            reward = body.score/(body.y/100)
+            reward = body.score*10+(body.y/1000)
+            if body.falling:
+                reward-=0.01
+            if body.jumping:
+                reward-=0.05
             #print(body.score/(body.y/100))
             
             
@@ -329,7 +340,7 @@ def main():
             with tf.GradientTape() as tape:
                 current_q_values = q_network(current_state)
                 current_q_value = tf.reduce_sum(tf.multiply(current_q_values, tf.one_hot([action_mapping[action]], 3)), axis=1)
-
+                print("Current Q-values before update:", current_q_values)
                 next_q_values = q_network(next_state)
                 max_next_q_value = tf.reduce_max(next_q_values, axis=1)
 
@@ -339,13 +350,20 @@ def main():
 
                 gradients = tape.gradient(loss, q_network.trainable_variables)
                 optimizer.apply_gradients(zip(gradients, q_network.trainable_variables))
+                print("Current Q-values after update:", q_network(current_state))
+
             exploration_proba = exploration_proba*0.9999
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     game_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        game_running = False
             pygame.time.Clock().tick(GAME_FPS)
-
+    print("SAVING NETWORK")
+    q_network.save('q_network_saved_data')
+    print("NETWORK SAVED")
 
 if __name__ == "__main__":
     main()
