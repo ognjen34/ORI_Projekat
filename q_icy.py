@@ -8,7 +8,7 @@ import tensorflow as tf
 import pickle
 
 
-GAME_FPS = 300
+GAME_FPS = 150
 WIDTH, HEIGHT = 1000, 700
 JUMPING_HEIGHT = 20
 MAX_ACCELERATION = 13
@@ -77,6 +77,7 @@ def setGlobals() :
     BACKGROUND_Y = HEIGHT - BACKGROUND.get_height()
     background_y = BACKGROUND_Y
 
+
 class Shelf:
     def __init__(self, number):
         self.number = number
@@ -96,6 +97,7 @@ class Body:
         self.acceleration = 0
         self.jumpable = self.vel_y <= 0  
         self.score = 0
+        self.previous_score = 0
         self.jumping = False
         self.falling = False
         self.standing = False
@@ -103,6 +105,9 @@ class Body:
         self.new_movement = False
         self.current_direction = None
         self.current_standing_shelf = None
+        self.max = 0
+         
+        
         action_size = 3
 
 
@@ -178,6 +183,9 @@ def OnShelf():  # Checking whether the body is on a shelf, returning True/False.
                 if body.x + body.size * 2 / 3 >= shelf.rect.x and body.x + body.size * 1 / 3 <= shelf.rect.x + shelf.width:  # if x values collide.
                     body.y = shelf.rect.y - body.size
                     body.score = shelf.number
+                    body.previous_score = body.score
+                    if shelf.number >= body.max:
+                        body.max = shelf.number
                     #print(body.score)
                     if body.current_standing_shelf != shelf.number and shelf.number % 50 == 0 and shelf.number != 0:
                         BACKGROUND_ROLLING_SPEED += 1  # Rolling speed increases every 50 shelves.
@@ -250,20 +258,61 @@ class QNetwork(tf.keras.Model):
     def from_config(cls, config):
         return cls(**config)
 
-# Example usage:
-action_size = 3
+action_size = 4
 q_network = tf.keras.Sequential()
-q_network.add(tf.keras.layers.Dense(64, activation='relu', input_shape=(6,)))
-q_network.add(tf.keras.layers.Dense(64, activation='relu'))
+q_network.add(tf.keras.layers.Dense(124, activation='relu', input_shape=(6,)))
+q_network.add(tf.keras.layers.Dense(124, activation='relu'))
 q_network.add(tf.keras.layers.Dense(action_size))
 optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-action_mapping = {'jump':0,'left':1,'right':2}
-q_network = tf.keras.models.load_model("q_network_saved_data")
+action_mapping = {'jump':0,'left':1,'right':2,'stand':3}
+q_network = model = tf.keras.models.load_model('q_network_saved_data')
+q_network.compile(optimizer,loss='mean_squared_error')
+memory = []
+def learn():
+    print("Learning...")
+    random.shuffle(memory)
+    num_elements = min(50, len(memory))
+    batch_current_state = []
+    batch_action = []
+    batch_reward = []
+    batch_next_state = []
+    for _ in range(num_elements):
+        item = memory.pop()
+        current_state = item["current_state"]
+        action = item["action"]
+        reward = item["reward"]
+        next_state = item["next_state"]
+
+        batch_current_state.append(current_state)
+        batch_action.append(action)
+        batch_reward.append(reward)
+        batch_next_state.append(next_state)
+
+    batch_current_state = np.array(batch_current_state)
+    batch_action_indices = [action_mapping[a] for a in batch_action]  # Convert actions to indices
+
+    batch_reward = np.array(batch_reward)
+    batch_next_state = np.array(batch_next_state)
+
+    batch_current_state = np.squeeze(batch_current_state)
+    batch_next_state = np.squeeze(batch_next_state)
+
+    current_q_values = q_network.predict(batch_current_state)
+    next_q_values = q_network.predict(batch_next_state)
+    max_next_q_values = np.max(next_q_values, axis=1)
+
+    target_q_values = batch_reward + gamma * max_next_q_values
+
+    current_q_values[np.arange(num_elements), batch_action_indices] = target_q_values
+
+    q_network.fit(batch_current_state, current_q_values, epochs=1, verbose=0)
+
 def main():  
     global body,VEL_Y,gamma,exploration_proba
     game_running = True
     paused = False
     sound_timer = 0
+    time = 0
     for i in range(100) :
         while game_running:
             current_state = tf.convert_to_tensor([list([body.x, body.y, body.score,body.standing,body.falling,body.jumping])])  # Convert current state to a tensor
@@ -275,15 +324,15 @@ def main():
                 for _ in range(BACKGROUND_ROLLING_SPEED):
                     ScreenRollDown()
             DrawWindow()  
-            if np.random.uniform(0, 1) < exploration_proba:
-                if body.jumping or body.falling :
-                    action = random.choice(['left', 'right'])
-                else :
-                    action = random.choice(['jump','left', 'right'])
+            if np.random.uniform(0, 1) < exploration_proba:    
+                action = random.choice(['jump','left', 'right','stand'])
             else:
                 q_values = q_network(current_state)  # Get Q-values from the Q-network
+                print(q_values)
                 action_index = tf.argmax(q_values[0]).numpy()  # Choose the action index with the highest Q-value
+                print(tf.argmax(q_values[0]).numpy())
                 action = list(action_mapping.keys())[action_index]  # Convert the action index to the corresponding string action
+                
             print(exploration_proba)
             if action != "jump" :
                 HandleMovement(action)  
@@ -328,29 +377,67 @@ def main():
 
             
             next_state = tf.convert_to_tensor([list((body.x, body.y,body.score,body.standing,body.falling,body.jumping))])  
-            reward = body.score*10+(body.y/1000)
-            if body.falling:
-                reward-=0.01
-            if body.jumping:
-                reward-=0.05
+            reward = (body.score - body.previous_score) * 100
             #print(body.score/(body.y/100))
-            
-            
+            if action == 'jump' and body.jumping:
+                reward -= 1000
+            if body.score > body.max:
+                reward += 1000
+            if action == "jump":
+                if not body.jumping:
+                    reward += 1000
+            consecutive_right_steps = 0
+            consecutive_no_action = 0
+            consecutive_left_steps = 0 
+            consecutive_no_progress = 0
+            center_x = WIDTH / 2  # Calculate the center position on the x-axis
 
-            with tf.GradientTape() as tape:
-                current_q_values = q_network(current_state)
-                current_q_value = tf.reduce_sum(tf.multiply(current_q_values, tf.one_hot([action_mapping[action]], 3)), axis=1)
-                print("Current Q-values before update:", current_q_values)
-                next_q_values = q_network(next_state)
-                max_next_q_value = tf.reduce_max(next_q_values, axis=1)
+            distance_to_center = abs(body.x - center_x)
 
-                target_q_value = reward + gamma * max_next_q_value
 
-                loss = tf.reduce_mean(tf.square(current_q_value - target_q_value))
+            penalty = 5  
+            if not body.jumping and not body.falling:
+                if action == "left":
+                    reward -= distance_to_center * 3
+                    if body.score > body.previous_score:
+                        reward += (body.score - body.previous_score) * 100
+                        consecutive_left_steps = 0  
+                    else:
+                        reward -= penalty * consecutive_left_steps + 10
+                        consecutive_left_steps += 1
+                if action == "right":
+                    reward -= distance_to_center * 3
+                    if body.score > body.previous_score:
+                        reward += (body.score - body.previous_score) * 100
+                        consecutive_right_steps = 0  
+                    else:
+                        reward -= penalty * consecutive_right_steps + 10
+                        consecutive_right_steps += 1
+                if action == "stand":
+                    reward -= distance_to_center  * 10
+                    if body.score > body.previous_score:
+                        reward += (body.score - body.previous_score) * 100
+                        consecutive_no_action = 0  
+                    else:
+                        print(reward)
+                        reward -= penalty * consecutive_right_steps
+                        consecutive_no_action += 1
+            if body.score <= body.previous_score:
+                consecutive_no_progress+=1
+                reward-=10*consecutive_no_progress
+                if body.jumping or body.falling:
+                    reward-=10
+            else:
+                consecutive_no_progress = 0
+            if body.falling:
+                reward-=10
+            if (body.jumping or body.falling) and (action == "left" or action == "right"):
+                reward += 50
+            memory.append({'current_state':current_state,'action':action,'reward':reward,'next_state':next_state})
 
-                gradients = tape.gradient(loss, q_network.trainable_variables)
-                optimizer.apply_gradients(zip(gradients, q_network.trainable_variables))
-                print("Current Q-values after update:", q_network(current_state))
+            time+=1
+            if time % 30 == 0:
+                learn()
 
             exploration_proba = exploration_proba*0.9999
             
